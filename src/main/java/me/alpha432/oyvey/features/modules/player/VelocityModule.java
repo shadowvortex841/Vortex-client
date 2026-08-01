@@ -7,6 +7,7 @@ import net.minecraft.network.protocol.game.ClientboundExplodePacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.Optional;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -14,7 +15,7 @@ public class VelocityModule extends Module {
     
     public static final VelocityModule INSTANCE = new VelocityModule();
 
-    // Vape-style settings (0.0 to 1.0)
+    // Settings (0.0 to 1.0)
     public float horizontal = 0.0f;   // 0% horizontal KB taken
     public float vertical = 0.0f;     // 0% vertical KB taken
     public float chance = 1.0f;       // 100% chance to apply reduction
@@ -22,12 +23,12 @@ public class VelocityModule extends Module {
     // Delay settings to bypass anticheat desync checks
     public int delayTicks = 3;        // Delay packets by 3 ticks to simulate lag/desync
     
-    // Queues to hold delayed packets
+    // Queue to hold delayed packets
     private final ConcurrentLinkedQueue<DelayedPacket<?>> packetQueue = new ConcurrentLinkedQueue<>();
     private int currentTick = 0;
 
     public VelocityModule() {
-        super("Velocity", "Reduces knockback bypassing anticheats (Vape style)", Category.PLAYER);
+        super("Velocity", "Reduces knockback bypassing anticheats", Category.PLAYER);
     }
 
     @Subscribe
@@ -37,11 +38,8 @@ public class VelocityModule extends Module {
         // 1. Intercept Entity Motion Packet (Player KB)
         if (event.getPacket() instanceof ClientboundSetEntityMotionPacket motionPacket) {
             if (motionPacket.getId() == mc.player.getId()) {
-                // Roll the chance. If we fail the chance, let vanilla handle it (legit)
                 if (ThreadLocalRandom.current().nextFloat() <= chance) {
-                    event.cancel(); // Cancel original instant processing
-                    
-                    // Queue it for delayed processing
+                    event.cancel();
                     packetQueue.add(new DelayedPacket<>(motionPacket, currentTick + delayTicks));
                 }
             }
@@ -57,8 +55,7 @@ public class VelocityModule extends Module {
     }
 
     /**
-     * Called every client tick (usually via your client's tick event manager).
-     * Processes the queue and applies the modified packets.
+     * Called every client tick to process queued packets.
      */
     public void onTick() {
         currentTick++;
@@ -67,13 +64,12 @@ public class VelocityModule extends Module {
 
         packetQueue.removeIf(delayed -> {
             if (currentTick >= delayed.targetTick) {
-                // Roll back the cancellation and apply the packet manually
                 if (delayed.packet instanceof ClientboundSetEntityMotionPacket motionPacket) {
                     applyMotionPacket(motionPacket);
                 } else if (delayed.packet instanceof ClientboundExplodePacket explodePacket) {
                     applyExplosionPacket(explodePacket);
                 }
-                return true; // Remove from queue
+                return true;
             }
             return false;
         });
@@ -82,35 +78,36 @@ public class VelocityModule extends Module {
     private void applyMotionPacket(ClientboundSetEntityMotionPacket packet) {
         if (mc.player == null) return;
         
-        // Corrected getters for Mojang mappings / modern Fabric
-        double vX = packet.getX() / 8000.0;
-        double vY = packet.getY() / 8000.0;
-        double vZ = packet.getZ() / 8000.0;
+        // 1.21+ Mojang mappings: getMovement() returns Vec3 directly
+        Vec3 movement = packet.getMovement();
+        if (movement != null) {
+            double vX = movement.x;
+            double vY = movement.y;
+            double vZ = movement.z;
 
-        // Scale by our Vape settings
-        mc.player.setDeltaMovement(
-            mc.player.getDeltaMovement().add(vX * horizontal, vY * vertical, vZ * horizontal)
-        );
-    }
-
-    private void applyExplosionPacket(ClientboundExplodePacket packet) {
-        if (mc.player == null) return;
-        
-        // Corrected explosion velocity calculation using getPlayerKnockback() or Vec3
-        Vec3 knockback = packet.getPlayerKnockback();
-        if (knockback != null) {
-            double vX = knockback.x;
-            double vY = knockback.y;
-            double vZ = knockback.z;
-
-            // Scale by our Vape settings
             mc.player.setDeltaMovement(
                 mc.player.getDeltaMovement().add(vX * horizontal, vY * vertical, vZ * horizontal)
             );
         }
     }
 
-    // Helper class to store packet data and target tick
+    private void applyExplosionPacket(ClientboundExplodePacket packet) {
+        if (mc.player == null) return;
+        
+        // 1.21+ Mojang mappings: Record component accessor is playerKnockback() returning Optional<Vec3>
+        Optional<Vec3> knockbackOpt = packet.playerKnockback();
+        if (knockbackOpt.isPresent()) {
+            Vec3 knockback = knockbackOpt.get();
+            double vX = knockback.x;
+            double vY = knockback.y;
+            double vZ = knockback.z;
+
+            mc.player.setDeltaMovement(
+                mc.player.getDeltaMovement().add(vX * horizontal, vY * vertical, vZ * horizontal)
+            );
+        }
+    }
+
     private static class DelayedPacket<T> {
         final T packet;
         final int targetTick;
